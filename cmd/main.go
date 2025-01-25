@@ -6,80 +6,79 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
-	"github.com/sirupsen/logrus"
-	"github.com/spf13/viper"
+
 	"github.com/zhashkevych/todo-app"
 	"github.com/zhashkevych/todo-app/pkg/handler"
 	"github.com/zhashkevych/todo-app/pkg/repository"
 	"github.com/zhashkevych/todo-app/pkg/service"
+
+	"github.com/joho/godotenv"
+	"github.com/sirupsen/logrus"
 )
-
-// @title Todo App API
-// @version 1.0
-// @description API Server for TodoList Application
-
-// @host localhost:8000
-// @BasePath /
-
-// @securityDefinitions.apikey ApiKeyAuth
-// @in header
-// @name Authorization
 
 func main() {
 	logrus.SetFormatter(new(logrus.JSONFormatter))
 
-	if err := initConfig(); err != nil {
-		logrus.Fatalf("error initializing configs: %s", err.Error())
-	}
-
+	// Загружаем переменные окружения из .env файла (если есть)
 	if err := godotenv.Load(); err != nil {
-		logrus.Fatalf("error loading env variables: %s", err.Error())
+		logrus.Warnf("error loading .env file: %s", err.Error())
 	}
 
-	db, err := repository.NewPostgresDB(repository.Config{
-		Host:     viper.GetString("db.host"),
-		Port:     viper.GetString("db.port"),
-		Username: viper.GetString("db.username"),
-		DBName:   viper.GetString("db.dbname"),
-		SSLMode:  viper.GetString("db.sslmode"),
-		Password: os.Getenv("DB_PASSWORD"),
-	})
+	// Конфигурация базы данных из переменных окружения
+	dbConfig := repository.Config{
+		Host:     getEnv("DB_HOST", "db"),           // Имя сервиса в Docker Compose
+		Port:     getEnv("DB_PORT", "5432"),         // Порт PostgreSQL
+		Username: getEnv("DB_USER", "postgres"),     // Пользователь PostgreSQL
+		DBName:   getEnv("DB_NAME", "postgres"),     // Имя базы данных
+		Password: getEnv("DB_PASSWORD", "postgres"), // Пароль
+		SSLMode:  getEnv("DB_SSLMODE", "disable"),   // Режим SSL
+	}
+
+	// Подключение к базе данных с повторными попытками
+	db, err := repository.NewPostgresDB(dbConfig)
+
 	if err != nil {
 		logrus.Fatalf("failed to initialize db: %s", err.Error())
 	}
 
+	// Инициализация репозиториев, сервисов и обработчиков
 	repos := repository.NewRepository(db)
 	services := service.NewService(repos)
 	handlers := handler.NewHandler(services)
 
+	// Запуск HTTP-сервера
 	srv := new(todo.Server)
 	go func() {
-		if err := srv.Run(viper.GetString("port"), handlers.InitRoutes()); err != nil {
-			logrus.Fatalf("error occured while running http server: %s", err.Error())
+		if err := srv.Run(getEnv("APP_PORT", "8000"), handlers.InitRoutes()); err != nil {
+			logrus.Fatalf("error occurred while running http server: %s", err.Error())
 		}
 	}()
 
-	logrus.Print("TodoApp Started")
+	logrus.Info("TodoApp Started")
 
+	// Ожидание сигнала для завершения работы
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
 	<-quit
 
-	logrus.Print("TodoApp Shutting Down")
+	logrus.Info("TodoApp Shutting Down")
 
+	// Завершение работы сервера и закрытие соединения с базой данных
 	if err := srv.Shutdown(context.Background()); err != nil {
-		logrus.Errorf("error occured on server shutting down: %s", err.Error())
+		logrus.Errorf("error occurred on server shutting down: %s", err.Error())
 	}
 
 	if err := db.Close(); err != nil {
-		logrus.Errorf("error occured on db connection close: %s", err.Error())
+		logrus.Errorf("error occurred on db connection close: %s", err.Error())
 	}
 }
 
-func initConfig() error {
-	viper.AddConfigPath("configs")
-	viper.SetConfigName("config")
-	return viper.ReadInConfig()
+// getEnv возвращает значение переменной окружения или значение по умолчанию
+func getEnv(key, defaultValue string) string {
+	value := os.Getenv(key)
+	if value == "" {
+		return defaultValue
+	}
+	return value
 }

@@ -1,19 +1,31 @@
-FROM golang:1.14-buster
+# Используем многоэтапную сборку для уменьшения размера итогового образа
+FROM golang:1.21-alpine AS builder
 
-RUN go version
-ENV GOPATH=/
+# Устанавливаем рабочую директорию
+WORKDIR /app
 
-COPY ./ ./
-
-# install psql
-RUN apt-get update
-RUN apt-get -y install postgresql-client
-
-# make wait-for-postgres.sh executable
-RUN chmod +x wait-for-postgres.sh
-
-# build go app
+# Копируем go.mod и go.sum для установки зависимостей
+COPY go.mod go.sum ./
 RUN go mod download
-RUN go build -o todo-app ./cmd/main.go
 
+# Копируем исходный код
+COPY . .
+
+# Собираем приложение
+RUN CGO_ENABLED=0 GOOS=linux go build -o todo-app ./cmd/main.go
+
+# Финальный образ
+FROM alpine:latest
+
+# Устанавливаем рабочую директорию
+WORKDIR /app
+
+# Копируем собранное приложение
+COPY --from=builder /app/todo-app .
+COPY .env ./
+
+# Копируем статические файлы (если есть)
+COPY ./configs ./configs
+
+# Указываем команду для запуска
 CMD ["./todo-app"]
